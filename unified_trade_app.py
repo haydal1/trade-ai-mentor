@@ -25,7 +25,14 @@ import secrets
 from flask_mail import Mail, Message
 import secrets
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+import sys
 
+# Debug: Check current directory and model paths
+print(f"Current working directory: {os.getcwd()}")
+print(f"Files in current directory: {os.listdir('.')}")
+print(f"Final models directory exists: {os.path.exists('final_models/')}")
+if os.path.exists('final_models/'):
+    print(f"Models found: {os.listdir('final_models/')}")
 # Load environment variables
 load_dotenv()
 
