@@ -1,0 +1,70 @@
+# Version control
+.git/
+.gitignore
+.github/
+
+# Python
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments from all projects
+*/venv/
+*/env/
+trade_ai_mentor*/venv/
+trade_ai_mentor*/env/
+
+# Datasets (too large - not needed in container)
+sewer_dataset/
+construction_dataset/
+electrician_dataset/
+professional_sewer_dataset/
+kaggle_crack_dataset/
+crackforest/
+*/dataset*/
+*/sewer*/
+*/construction*/
+*/electrician*/
+
+# Old project directories (not needed)
+trade_ai_mentor/
+trade_ai_mentor_v2/
+trade_ai_mentor_final/
+trade_ai_mentor_web/
+trade_ai_mentor_new/
+temp_kaggle/
+
+# Model checkpoints (keep only final models)
+checkpoints/
+*/checkpoints/
+*.ckpt
+
+# Docker files
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and local files
+*.log
+*.sqlite3
+*.db
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
