@@ -28,12 +28,15 @@ from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 import sys
 import glob
 import requests
+import tempfile
+from urllib.parse import urljoin
 # Debug: Check current directory and model paths
 print(f"Current working directory: {os.getcwd()}")
 print(f"Files in current directory: {os.listdir('.')}")
 print(f"Final models directory exists: {os.path.exists('final_models/')}")
 if os.path.exists('final_models/'):
     print(f"Models found: {os.listdir('final_models/')}")
+
 # Load environment variables
 load_dotenv()
 
@@ -183,13 +186,26 @@ def subscription_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Class names for each trade
+CLASS_NAMES = {
+    'construction': ['normal', 'crack'],
+    'plumbing': ['normal', 'crack', 'root', 'deposit', 'obstacle', 
+                 'deformation', 'joint_displacement', 'hole', 'corrosion', 'infiltration'],
+    'electrical': ['normal', 'burnt_wiring', 'corrosion', 'loose_connection',
+                   'overheating', 'water_damage', 'cracked_insulation',
+                   'exposed_wire', 'improper_wiring']
+}
+
+# Model accuracies
+MODEL_ACCURACIES = {
+    'construction': 99.47,
+    'plumbing': 91.53,
+    'electrical': 91.73
+}
+
 # ============================================
 # LOAD MODELS FROM CLOUD STORAGE
 # ============================================
-import os
-import requests
-import tempfile
-from urllib.parse import urljoin
 
 # Cloud Storage base URL
 GCS_BASE_URL = "https://storage.googleapis.com/trade-ai-mentor-models/"
@@ -271,9 +287,6 @@ for trade, filename in MODEL_FILES.items():
 # ============================================
 # LOAD ALL THREE MODELS
 # ============================================
-# ============================================
-# LOAD ALL THREE MODELS
-# ============================================
 print("="*60)
 print("🔍 DETAILED MODEL DEBUGGING")
 print("="*60)
@@ -306,22 +319,7 @@ MODEL_PATHS = {
     'electrical': 'final_models/electrical_defect_detector_best.pth'
 }
 
-# Class names for each trade
-CLASS_NAMES = {
-    'construction': ['normal', 'crack'],
-    'plumbing': ['normal', 'crack', 'root', 'deposit', 'obstacle', 
-                 'deformation', 'joint_displacement', 'hole', 'corrosion', 'infiltration'],
-    'electrical': ['normal', 'burnt_wiring', 'corrosion', 'loose_connection',
-                   'overheating', 'water_damage', 'cracked_insulation',
-                   'exposed_wire', 'improper_wiring']
-}
 
-# Model accuracies
-MODEL_ACCURACIES = {
-    'construction': 99.47,
-    'plumbing': 91.53,
-    'electrical': 91.73
-}
 
 # Repair guidance for each defect type
 REPAIR_GUIDANCE = {
@@ -1361,7 +1359,7 @@ REGISTER_TEMPLATE = '''
 </head>
 <body>
     <div class="auth-card">
-        <h2>🚀 Start Your Free Trial</h2>
+        <h2> Start Your Free Trial</h2>
         
         <div class="free-trial-badge">
             <strong>5 Free Analyses</strong><br>
@@ -2653,7 +2651,7 @@ async function analyze() {
                 notification.style.boxShadow = '0 2px 10px rgba(0,0,0,0.1)';
                 notification.style.zIndex = '1000';
                 notification.style.animation = 'slideIn 0.3s ease';
-                notification.textContent = `✅ Free trials remaining: ${data.free_trials_remaining}`;
+                notification.textContent = ` Free trials remaining: ${data.free_trials_remaining}`;
                 document.body.appendChild(notification);
                 
                 // Remove notification after 3 seconds
