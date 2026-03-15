@@ -946,6 +946,15 @@ def predict():
     
     return jsonify(result)
 
+@app.route('/health/models')
+def health_models():
+    """Check if models are loaded"""
+    return jsonify({
+        'construction': models_dict.get('construction') is not None,
+        'plumbing': models_dict.get('plumbing') is not None,
+        'electrical': models_dict.get('electrical') is not None
+    })
+
 @app.route('/health')
 def health():
     return jsonify({
