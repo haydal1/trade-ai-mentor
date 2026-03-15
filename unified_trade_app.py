@@ -284,43 +284,6 @@ for trade, filename in MODEL_FILES.items():
         print(f"   ❌ Error loading {trade} model: {e}")
         models_dict[trade] = None
 
-# ============================================
-# LOAD ALL THREE MODELS
-# ============================================
-print("="*60)
-print("🔍 DETAILED MODEL DEBUGGING")
-print("="*60)
-print(f"Current directory: {os.getcwd()}")
-print(f"Directory contents: {os.listdir('.')}")
-
-# Check final_models directory
-if os.path.exists('final_models'):
-    print(f"\n📁 final_models contents:")
-    for f in os.listdir('final_models'):
-        size = os.path.getsize(f'final_models/{f}')
-        print(f"  - {f} ({size} bytes)")
-else:
-    print("\n❌ final_models directory NOT FOUND!")
-
-# Check root directory for model files
-print(f"\n📁 Root directory model files:")
-model_files = glob.glob('*.pth') + glob.glob('*.pt')
-for f in model_files:
-    size = os.path.getsize(f)
-    print(f"  - {f} ({size} bytes)")
-
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"\n🚀 Loading models on {DEVICE}...")
-
-# Model paths
-MODEL_PATHS = {
-    'construction': 'final_models/construction_defect_detector_best.pth',
-    'plumbing': 'final_models/pro_physical_work_ai_mentor_best.pth',
-    'electrical': 'final_models/electrical_defect_detector_best.pth'
-}
-
-
-
 # Repair guidance for each defect type
 REPAIR_GUIDANCE = {
     'construction': {
@@ -527,28 +490,6 @@ REPAIR_GUIDANCE = {
         }
     }
 }
-
-# Load all models
-models_dict = {}
-
-for trade, path in MODEL_PATHS.items():
-    try:
-        print(f"📦 Loading {trade} model...")
-        checkpoint = torch.load(path, map_location=DEVICE)
-        
-        num_classes = len(CLASS_NAMES[trade])
-        model = models.resnet18(weights=None)
-        num_features = model.fc.in_features
-        model.fc = nn.Linear(num_features, num_classes)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model = model.to(DEVICE)
-        model.eval()
-        
-        models_dict[trade] = model
-        print(f"   ✅ {trade} model loaded ({MODEL_ACCURACIES[trade]}% accuracy)")
-    except Exception as e:
-        print(f"   ❌ Error loading {trade} model: {e}")
-        models_dict[trade] = None
 
 # Image transform
 transform = transforms.Compose([
