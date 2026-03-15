@@ -26,7 +26,8 @@ from flask_mail import Mail, Message
 import secrets
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 import sys
-
+import glob
+import requests
 # Debug: Check current directory and model paths
 print(f"Current working directory: {os.getcwd()}")
 print(f"Files in current directory: {os.listdir('.')}")
@@ -163,6 +164,8 @@ def load_user(user_id):
         return User(user[0], user[1], user[3], user[4], user[5], user[6], user[7])
     return None
 
+
+
 # ============================================
 # SUBSCRIPTION DECORATOR
 # ============================================
@@ -181,10 +184,120 @@ def subscription_required(f):
     return decorated_function
 
 # ============================================
-# LOAD ALL THREE MODELS
+# LOAD MODELS FROM CLOUD STORAGE
 # ============================================
+import os
+import requests
+import tempfile
+from urllib.parse import urljoin
+
+# Cloud Storage base URL
+GCS_BASE_URL = "https://storage.googleapis.com/trade-ai-mentor-models/"
+
+MODEL_FILES = {
+    'construction': 'construction_defect_detector_best.pth',
+    'plumbing': 'pro_physical_work_ai_mentor_best.pth',
+    'electrical': 'electrical_defect_detector_best.pth'
+}
+
+def download_model_from_gcs(filename):
+    """Download model from Cloud Storage to a temporary file"""
+    url = urljoin(GCS_BASE_URL, filename)
+    print(f"📥 Downloading {filename} from {url}")
+    
+    try:
+        # Stream the download to handle large files efficiently
+        with requests.get(url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pth')
+            
+            # Write in chunks
+            for chunk in r.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+            
+            temp_file.close()
+            print(f"✅ Downloaded {filename} ({os.path.getsize(temp_file.name)} bytes)")
+            return temp_file.name
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Failed to download {filename}: {e}")
+        return None
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"🚀 Loading models on {DEVICE}...")
+
+models_dict = {}
+
+for trade, filename in MODEL_FILES.items():
+    try:
+        print(f"\n📦 Loading {trade} model...")
+        
+        # Download from Cloud Storage
+        model_path = download_model_from_gcs(filename)
+        if not model_path:
+            models_dict[trade] = None
+            continue
+        
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location=DEVICE)
+        
+        # Create model architecture
+        num_classes = len(CLASS_NAMES[trade])
+        model = models.resnet18(weights=None)
+        num_features = model.fc.in_features
+        model.fc = nn.Linear(num_features, num_classes)
+        
+        # Handle different checkpoint formats
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
+            
+        model = model.to(DEVICE)
+        model.eval()
+        
+        models_dict[trade] = model
+        print(f"   ✅ {trade} model loaded successfully")
+        
+        # Clean up temp file
+        os.unlink(model_path)
+        
+    except Exception as e:
+        print(f"   ❌ Error loading {trade} model: {e}")
+        models_dict[trade] = None
+
+# ============================================
+# LOAD ALL THREE MODELS
+# ============================================
+# ============================================
+# LOAD ALL THREE MODELS
+# ============================================
+print("="*60)
+print("🔍 DETAILED MODEL DEBUGGING")
+print("="*60)
+print(f"Current directory: {os.getcwd()}")
+print(f"Directory contents: {os.listdir('.')}")
+
+# Check final_models directory
+if os.path.exists('final_models'):
+    print(f"\n📁 final_models contents:")
+    for f in os.listdir('final_models'):
+        size = os.path.getsize(f'final_models/{f}')
+        print(f"  - {f} ({size} bytes)")
+else:
+    print("\n❌ final_models directory NOT FOUND!")
+
+# Check root directory for model files
+print(f"\n📁 Root directory model files:")
+model_files = glob.glob('*.pth') + glob.glob('*.pt')
+for f in model_files:
+    size = os.path.getsize(f)
+    print(f"  - {f} ({size} bytes)")
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"\n🚀 Loading models on {DEVICE}...")
 
 # Model paths
 MODEL_PATHS = {
