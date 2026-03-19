@@ -4,11 +4,11 @@ flask-mail
 itsdangerous
 werkzeug
 gunicorn==21.2.0
-stripe
 python-dotenv
-# CPU-only PyTorch (much smaller!)
+requests
+rave_python
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.0.1+cpu
 torchvision==0.15.2+cpu
---extra-index-url https://download.pytorch.org/whl/cpu
 Pillow==10.0.0
 numpy==1.24.3
