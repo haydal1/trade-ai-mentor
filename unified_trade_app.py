@@ -18,18 +18,18 @@ import json
 from datetime import datetime, timedelta
 import hashlib
 import sqlite3
-import stripe
 from dotenv import load_dotenv
 from functools import wraps
 import secrets
 from flask_mail import Mail, Message
-import secrets
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 import sys
 import glob
 import requests
 import tempfile
 from urllib.parse import urljoin
+from rave_python import Rave
+
 # Debug: Check current directory and model paths
 print(f"Current working directory: {os.getcwd()}")
 print(f"Files in current directory: {os.listdir('.')}")
@@ -44,27 +44,30 @@ app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', secrets.token_hex(32))
 
 # ============================================
-# STRIPE CONFIGURATION
+# FLUTTERWAVE CONFIGURATION
 # ============================================
-stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
-STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY')
-STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
+# Initialize Flutterwave (set production=True when going live)
+rave = Rave(
+    os.getenv('FLW_PUBLIC_KEY'), 
+    os.getenv('FLW_SECRET_KEY'), 
+    production=True
+)
 
-# Subscription prices (create these in Stripe dashboard)
-PRICE_IDS = {
-    'monthly': os.getenv('STRIPE_MONTHLY_PRICE_ID'),
-    'yearly': os.getenv('STRIPE_YEARLY_PRICE_ID'),
-    'lifetime': os.getenv('STRIPE_LIFETIME_PRICE_ID')
+# Plan IDs (create these in your Flutterwave dashboard)
+PLAN_IDS = {
+    'monthly': os.getenv('FLW_MONTHLY_PLAN_ID'),  # Your monthly plan ID
+    'yearly': os.getenv('FLW_YEARLY_PLAN_ID'),    # Your yearly plan ID
+    'lifetime': os.getenv('FLW_LIFETIME_PLAN_ID') # Your lifetime plan ID
 }
 
 # ============================================
 # MAIL CONFIGURATION (for password reset)
 # ============================================
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'  # or your email provider
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')  # your email
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')  # your app password
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME')
 
 mail = Mail(app)
@@ -78,7 +81,7 @@ serializer = URLSafeTimedSerializer(app.secret_key)
 def init_db():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
-    # Create users table
+    # Create users table (removed stripe_customer_id, added flutterwave fields)
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   email TEXT UNIQUE NOT NULL,
@@ -89,7 +92,8 @@ def init_db():
                   free_trials_used INTEGER DEFAULT 0,
                   max_free_trials INTEGER DEFAULT 5,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  stripe_customer_id TEXT)''')
+                  flutterwave_tx_ref TEXT,
+                  flutterwave_customer_id TEXT)''')
     
     # Create analyses table
     c.execute('''CREATE TABLE IF NOT EXISTS analyses
@@ -102,16 +106,16 @@ def init_db():
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (user_id) REFERENCES users (id))''')
     
-    # Create payment history table
+    # Create payment history table (updated for Flutterwave)
     c.execute('''CREATE TABLE IF NOT EXISTS payments
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
-                  stripe_session_id TEXT UNIQUE,
-                  stripe_customer_id TEXT,
+                  flutterwave_tx_ref TEXT UNIQUE,
+                  flutterwave_id TEXT,
                   amount REAL,
                   currency TEXT,
                   status TEXT,
-                  subscription_type TEXT,
+                  plan TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (user_id) REFERENCES users (id))''')
     
@@ -166,8 +170,6 @@ def load_user(user_id):
     if user:
         return User(user[0], user[1], user[3], user[4], user[5], user[6], user[7])
     return None
-
-
 
 # ============================================
 # SUBSCRIPTION DECORATOR
@@ -637,6 +639,10 @@ def logout():
     flash('Logged out successfully', 'success')
     return redirect(url_for('home'))
 
+@app.route('/pricing')
+def pricing():
+    return render_template_string(PRICING_TEMPLATE)
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -653,152 +659,161 @@ def dashboard():
                                  analyses=analyses,
                                  user=current_user)
 
-# ============================================
-# SUBSCRIPTION ROUTES
-# ============================================
-@app.route('/pricing')
-def pricing():
-    return render_template_string(PRICING_TEMPLATE, 
-                                 stripe_key=STRIPE_PUBLISHABLE_KEY)
 
-@app.route('/create-checkout-session', methods=['POST'])
+import requests
+import json
+
+@app.route('/create-flutterwave-subscription', methods=['POST'])
 @login_required
-def create_checkout_session():
+def create_flutterwave_subscription():
     try:
         plan = request.json.get('plan', 'monthly')
         
-        # Create Stripe checkout session
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price': PRICE_IDS[plan],
-                'quantity': 1,
-            }],
-            mode='subscription' if plan in ['monthly', 'yearly'] else 'payment',
-            success_url=url_for('payment_success', _external=True) + '?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url=url_for('pricing', _external=True),
-            client_reference_id=str(current_user.id),
-            customer_email=current_user.email
+        # Set amount based on plan
+        if plan == 'monthly':
+            amount = "4.99"
+        elif plan == 'yearly':
+            amount = "39.99"
+        else:
+            amount = "79.99"
+        
+        # Generate transaction reference
+        tx_ref = f"tx-{current_user.id}-{secrets.token_hex(4)}"
+        
+        # Prepare payment data for Flutterwave API
+        payment_data = {
+            "tx_ref": tx_ref,
+            "amount": amount,
+            "currency": "USD",
+            "redirect_url": url_for('flutterwave_success', _external=True),
+            "payment_options": "card,ussd,account",
+            "customer": {
+                "email": current_user.email,
+                "name": current_user.name,
+                "phonenumber": ""
+            },
+            "meta": {
+                "user_id": current_user.id,
+                "plan": plan
+            },
+            "customizations": {
+                "title": "Trade AI Mentor",
+                "description": f"{plan.capitalize()} Subscription"
+            }
+        }
+        
+        # Add payment plan for recurring payments
+        if plan in ['monthly', 'yearly']:
+            payment_data["payment_plan"] = PLAN_IDS[plan]
+        
+        # Make API request to Flutterwave
+        headers = {
+            'Authorization': f'Bearer {os.getenv("FLW_SECRET_KEY")}',
+            'Content-Type': 'application/json'
+        }
+        
+        response = requests.post(
+            'https://api.flutterwave.com/v3/payments',
+            headers=headers,
+            json=payment_data
         )
         
-        return jsonify({'sessionId': checkout_session.id})
+        result = response.json()
+        print(f"Flutterwave API response: {result}")
+        
+        if result['status'] == 'success':
+            return jsonify({'link': result['data']['link']})
+        else:
+            return jsonify({'error': result.get('message', 'Unknown error')}), 400
+        
     except Exception as e:
+        print(f"ERROR: {str(e)}")
         return jsonify({'error': str(e)}), 403
 
-@app.route('/payment-success')
+@app.route('/flutterwave-success')
 @login_required
-def payment_success():
-    session_id = request.args.get('session_id')
+def flutterwave_success():
+    """Handle successful payment return"""
+    tx_ref = request.args.get('tx_ref')
+    transaction_id = request.args.get('transaction_id')
     
-    if session_id:
+    if transaction_id:
         try:
-            # Retrieve the session from Stripe
-            checkout_session = stripe.checkout.Session.retrieve(session_id)
+            # Verify transaction with Flutterwave
+            response = rave.Card.verify(transaction_id)
             
-            # Update user's subscription
-            conn = sqlite3.connect('users.db')
-            c = conn.cursor()
-            
-            # Determine subscription type
-            if checkout_session.mode == 'subscription':
-                # Get subscription details
-                subscription = stripe.Subscription.retrieve(checkout_session.subscription)
-                plan_type = 'monthly' if 'month' in subscription.items.data[0].price.recurring.interval else 'yearly'
-                end_date = datetime.now() + timedelta(days=30 if plan_type == 'monthly' else 365)
+            if response['status'] == 'success':
+                # Get transaction details
+                plan = response['data']['meta']['plan']
+                user_id = response['data']['meta']['user_id']
                 
-                c.execute('''UPDATE users 
-                           SET subscription_status = ?, subscription_end = ?, stripe_customer_id = ?
-                           WHERE id = ?''', 
-                         ('active', end_date.strftime('%Y-%m-%d'), checkout_session.customer, current_user.id))
+                # Update user subscription in database
+                conn = sqlite3.connect('users.db')
+                c = conn.cursor()
+                
+                if plan in ['monthly', 'yearly']:
+                    # Recurring subscription
+                    end_date = datetime.now() + timedelta(days=30 if plan == 'monthly' else 365)
+                    c.execute('''UPDATE users SET subscription_status = 'active', 
+                                 subscription_end = ?, flutterwave_tx_ref = ? 
+                                 WHERE id = ?''', 
+                             (end_date.strftime('%Y-%m-%d'), tx_ref, user_id))
+                else:
+                    # Lifetime
+                    c.execute('''UPDATE users SET subscription_status = 'lifetime', 
+                                 flutterwave_tx_ref = ? WHERE id = ?''', 
+                             (tx_ref, user_id))
+                
+                # Record payment
+                c.execute('''INSERT INTO payments (user_id, flutterwave_tx_ref, amount, currency, status, plan)
+                             VALUES (?, ?, ?, ?, ?, ?)''',
+                         (user_id, tx_ref, response['data']['amount'], 
+                          response['data']['currency'], 'successful', plan))
+                
+                conn.commit()
+                conn.close()
+                
+                flash('Payment successful! Your subscription is now active.', 'success')
             else:
-                # Lifetime purchase
-                c.execute('''UPDATE users 
-                           SET subscription_status = 'lifetime', stripe_customer_id = ?
-                           WHERE id = ?''', 
-                         (checkout_session.customer, current_user.id))
-            
-            # Record payment
-            c.execute('''INSERT INTO payments (user_id, stripe_session_id, stripe_customer_id, 
-                         amount, currency, status, subscription_type)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                     (current_user.id, session_id, checkout_session.customer,
-                      checkout_session.amount_total / 100, checkout_session.currency,
-                      'succeeded', 'subscription'))
-            
-            conn.commit()
-            conn.close()
-            
-            flash('Payment successful! Your subscription is now active.', 'success')
+                flash('Payment verification failed. Please contact support.', 'danger')
+                
         except Exception as e:
             flash(f'Error processing payment: {str(e)}', 'danger')
     
     return redirect(url_for('dashboard'))
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    payload = request.data
-    sig_header = request.headers.get('Stripe-Signature')
+@app.route('/flutterwave-webhook', methods=['POST'])
+def flutterwave_webhook():
+    """Handle Flutterwave payment notifications"""
+    data = request.json
     
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
-    except ValueError:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError:
-        return 'Invalid signature', 400
-    
-    # Handle the event
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        user_id = session.get('client_reference_id')
+    if data['event'] == 'charge.success':
+        # Get transaction details
+        tx_ref = data['data']['tx_ref']
+        plan = data['data']['meta']['plan']
+        user_id = data['data']['meta']['user_id']
         
-        if user_id:
-            conn = sqlite3.connect('users.db')
-            c = conn.cursor()
-            
-            # Update user subscription based on session
-            if session.get('mode') == 'subscription':
-                c.execute('''UPDATE users SET subscription_status = 'active' 
-                           WHERE id = ?''', (user_id,))
-            else:
-                c.execute('''UPDATE users SET subscription_status = 'lifetime' 
-                           WHERE id = ?''', (user_id,))
-            
-            conn.commit()
-            conn.close()
+        # Update user subscription in database
+        conn = sqlite3.connect('users.db')
+        c = conn.cursor()
+        
+        if plan in ['monthly', 'yearly']:
+            # Recurring subscription
+            end_date = datetime.now() + timedelta(days=30 if plan == 'monthly' else 365)
+            c.execute('''UPDATE users SET subscription_status = 'active', 
+                         subscription_end = ?, flutterwave_tx_ref = ? 
+                         WHERE id = ?''', 
+                     (end_date.strftime('%Y-%m-%d'), tx_ref, user_id))
+        else:
+            # Lifetime
+            c.execute('''UPDATE users SET subscription_status = 'lifetime', 
+                         flutterwave_tx_ref = ? WHERE id = ?''', 
+                     (tx_ref, user_id))
+        
+        conn.commit()
+        conn.close()
     
     return '', 200
-
-@app.route('/cancel-subscription', methods=['POST'])
-@login_required
-def cancel_subscription():
-    conn = sqlite3.connect('users.db')
-    c = conn.cursor()
-    user = c.execute('SELECT stripe_customer_id FROM users WHERE id = ?', 
-                    (current_user.id,)).fetchone()
-    conn.close()
-    
-    if user and user[0]:
-        try:
-            # Get active subscriptions
-            subscriptions = stripe.Subscription.list(customer=user[0], status='active')
-            for sub in subscriptions:
-                stripe.Subscription.delete(sub.id)
-            
-            # Update database
-            conn = sqlite3.connect('users.db')
-            c = conn.cursor()
-            c.execute('''UPDATE users SET subscription_status = 'cancelled' 
-                       WHERE id = ?''', (current_user.id,))
-            conn.commit()
-            conn.close()
-            
-            flash('Subscription cancelled successfully', 'success')
-        except Exception as e:
-            flash(f'Error cancelling subscription: {str(e)}', 'danger')
-    
-    return redirect(url_for('dashboard'))
 
 # ============================================
 # AI PREDICTION ROUTES (Protected)
@@ -1497,7 +1512,6 @@ PRICING_TEMPLATE = '''
             text-align: center;
         }
     </style>
-    <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -1554,7 +1568,7 @@ PRICING_TEMPLATE = '''
                     <li>Analysis history</li>
                     <li>Priority support</li>
                 </ul>
-                <button class="btn btn-primary" onclick="handleCheckout('monthly')">Subscribe Now</button>
+                <button class="btn btn-primary" onclick="handleFlutterwaveCheckout('monthly')">Subscribe Now</button>
             </div>
             
             <!-- Yearly Pro Card -->
@@ -1567,7 +1581,7 @@ PRICING_TEMPLATE = '''
                     <li>2 months free</li>
                     <li>Priority feature requests</li>
                 </ul>
-                <button class="btn btn-primary" onclick="handleCheckout('yearly')">Subscribe Now</button>
+                <button class="btn btn-primary" onclick="handleFlutterwaveCheckout('yearly')">Subscribe Now</button>
             </div>
             
             <!-- Lifetime Card -->
@@ -1580,7 +1594,7 @@ PRICING_TEMPLATE = '''
                     <li>Lifetime updates</li>
                     <li>VIP support</li>
                 </ul>
-                <button class="btn btn-primary" onclick="handleCheckout('lifetime')">Buy Lifetime</button>
+                <button class="btn btn-primary" onclick="handleFlutterwaveCheckout('lifetime')">Buy Lifetime</button>
             </div>
         </div>
         
@@ -1597,10 +1611,8 @@ PRICING_TEMPLATE = '''
     </div>
     
     <script>
-        const stripe = Stripe('{{ stripe_key }}');
-        
-        async function handleCheckout(plan) {
-            const response = await fetch('/create-checkout-session', {
+        async function handleFlutterwaveCheckout(plan) {
+            const response = await fetch('/create-flutterwave-subscription', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1608,22 +1620,15 @@ PRICING_TEMPLATE = '''
                 body: JSON.stringify({ plan: plan }),
             });
             
-            const session = await response.json();
+            const data = await response.json();
             
-            if (session.error) {
+            if (data.error) {
                 const message = document.getElementById('payment-message');
-                message.textContent = session.error;
+                message.textContent = data.error;
                 message.style.color = '#e53e3e';
             } else {
-                const result = await stripe.redirectToCheckout({
-                    sessionId: session.sessionId,
-                });
-                
-                if (result.error) {
-                    const message = document.getElementById('payment-message');
-                    message.textContent = result.error.message;
-                    message.style.color = '#e53e3e';
-                }
+                // Redirect to Flutterwave payment page
+                window.location.href = data.link;
             }
         }
     </script>
@@ -2637,7 +2642,7 @@ if __name__ == '__main__':
     print("\n📱 Features:")
     print("   ✅ User authentication")
     print("   ✅ 5 free trial analyses")
-    print("   ✅ Stripe subscriptions")
+    print("   ✅ Flutterwave subscriptions")
     print("   ✅ Dashboard with history")
     print("   ✅ Beautiful modern UI")
     print("   ✅ Repair guidance with steps and tools")

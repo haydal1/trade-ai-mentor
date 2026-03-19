@@ -58,3 +58,9 @@ jobs:
         gcloud run services describe ${{ env.SERVICE_NAME }} \
           --region ${{ env.REGION }} \
           --format 'value(status.url)'
+
+    - name: Verify model files
+      run: |
+        ls -la final_models/
+         pwd
+         file final_models/*.pth
